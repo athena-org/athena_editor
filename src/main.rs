@@ -25,8 +25,9 @@ use gfx::traits::*;
 use phosphorus::Gui;
 use phosphorus::widget::{ButtonBuilder, Layout, LayoutBuilder, TextBuilder};
 
-struct CancelationToken {
-    canceled: bool
+struct SharedData {
+    canceled: bool,
+    queued_layout: Option<Layout<gfx_device_gl::Resources>>
 }
 
 fn main() {
@@ -42,20 +43,32 @@ fn main() {
     };
 
     // Set up our Phosphorus UI
-    let token = Rc::new(RefCell::new(CancelationToken { canceled: false }));
-    let layout = LayoutBuilder::<gfx_device_gl::Resources>::new()
+    let data = Rc::new(RefCell::new(SharedData { canceled: false, queued_layout: None }));
+    let layout = generate_view(data.clone(), 0);
+
+    data.borrow_mut().queued_layout = Some(layout);
+
+    display_gui(data);
+}
+
+fn generate_view(data: Rc<RefCell<SharedData>>, num: i32) -> Layout<gfx_device_gl::Resources> {
+    LayoutBuilder::<gfx_device_gl::Resources>::new()
         .with_background_color([21, 23, 24])
         .with_widget(TextBuilder::new()
-            .with_text(&format!("Opened: {}!", path))
+            .with_text(&format!("Num: {}", num))
             .build_boxed())
-        .build();
-
-    display_gui(layout, token);
+        .with_widget(ButtonBuilder::new()
+            .with_text("Add One")
+            .with_callback(Box::new(move || {
+                data.borrow_mut().queued_layout = Some(generate_view(data.clone(), num + 1))
+            }))
+            .build_boxed())
+        .build()
 }
 
 fn display_error(text: &str) {
-    let token = Rc::new(RefCell::new(CancelationToken { canceled: false }));
-    let token_clone = token.clone();
+    let data = Rc::new(RefCell::new(SharedData { canceled: false, queued_layout: None }));
+    let data_clone = data.clone();
     let layout = LayoutBuilder::<gfx_device_gl::Resources>::new()
         .with_background_color([21, 23, 24])
         .with_widget(TextBuilder::new()
@@ -63,14 +76,16 @@ fn display_error(text: &str) {
             .build_boxed())
         .with_widget(ButtonBuilder::new()
             .with_text("Ok")
-            .with_callback(Box::new(move || token_clone.borrow_mut().canceled = true))
+            .with_callback(Box::new(move || data_clone.borrow_mut().canceled = true))
             .build_boxed())
         .build();
 
-    display_gui(layout, token);
+    data.borrow_mut().queued_layout = Some(layout);
+
+    display_gui(data);
 }
 
-fn display_gui(layout: Layout<gfx_device_gl::Resources>, token: Rc<RefCell<CancelationToken>>)
+fn display_gui(data: Rc<RefCell<SharedData>>)
 {
     // Set up our window
     let (mut stream, mut device, mut factory) = {
@@ -82,12 +97,23 @@ fn display_gui(layout: Layout<gfx_device_gl::Resources>, token: Rc<RefCell<Cance
         gfx_window_glutin::init(window)
     };
 
-    let mut gui = Gui::new(&mut device, layout, |d: &mut gfx_device_gl::Device| d.spawn_factory());
+    let mut gui = Gui::new(
+        &mut device,
+        data.borrow_mut().queued_layout.take().unwrap(),
+        |d: &mut gfx_device_gl::Device| d.spawn_factory());
 
     // Run our actual UI loop
     'main: loop {
-        if token.borrow().canceled {
-            break 'main;
+        {
+            let mut d = data.borrow_mut();
+
+            if d.canceled {
+                break 'main;
+            }
+
+            if let Some(layout) = d.queued_layout.take() {
+                gui.set_root(layout);
+            }
         }
 
         // Quit when the window is closed
