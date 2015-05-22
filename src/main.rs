@@ -30,6 +30,16 @@ struct SharedData {
     queued_layout: Option<Layout<gfx_device_gl::Resources>>
 }
 
+struct EntityEntry;
+
+struct WorldModel {
+    entities: Vec<EntityEntry>
+}
+
+struct Model {
+    worlds: Vec<WorldModel>
+}
+
 fn main() {
     // This is all a bunch of placeholder code that needs to be refactored into something coherent
 
@@ -44,23 +54,64 @@ fn main() {
 
     // Set up our Phosphorus UI
     let data = Rc::new(RefCell::new(SharedData { canceled: false, queued_layout: None }));
-    let layout = generate_view(data.clone(), 0);
+    let layout = generate_view(data.clone(), Rc::new(RefCell::new(Model { worlds: vec![] })));
 
     data.borrow_mut().queued_layout = Some(layout);
 
     display_gui(data);
 }
 
-fn generate_view(data: Rc<RefCell<SharedData>>, num: i32) -> Layout<gfx_device_gl::Resources> {
-    LayoutBuilder::<gfx_device_gl::Resources>::new()
-        .with_background_color([21, 23, 24])
-        .with_widget(TextBuilder::new()
-            .with_text(&format!("Num: {}", num))
-            .build_boxed())
+fn generate_view(data: Rc<RefCell<SharedData>>, model: Rc<RefCell<Model>>) -> Layout<gfx_device_gl::Resources> {
+    let mut builder = LayoutBuilder::<gfx_device_gl::Resources>::new()
+        .with_background_color([21, 23, 24]);
+
+    let mut wnum = 0;
+    for world in &model.borrow_mut().worlds {
+        builder = builder
+            .with_widget(TextBuilder::new()
+                .with_text(&format!("== World #{} ==", wnum))
+                .build_boxed());
+
+        let mut ennum = 0;
+        for entity in &world.entities {
+            builder = builder
+                .with_widget(TextBuilder::new()
+                    .with_text(&format!("Entity #{}", ennum))
+                    .build_boxed());
+            ennum += 1;
+        }
+
+        let tmp_model = model.clone();
+        let tmp_data = data.clone();
+        builder = builder
+            .with_widget(ButtonBuilder::new()
+                .with_text("Add Entity")
+                .with_callback(Box::new(move || {
+                    {
+                        let mut m = tmp_model.borrow_mut();
+                        let w = m.worlds.get_mut(wnum).unwrap();
+                        w.entities.push(EntityEntry);
+                    }
+
+                    tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_data.clone(), tmp_model.clone()));
+                }))
+            .build_boxed());
+        wnum += 1;
+
+        // Placeholder text as padding
+        builder = builder.with_widget(TextBuilder::new().build_boxed());
+    }
+
+    builder
         .with_widget(ButtonBuilder::new()
-            .with_text("Add One")
+            .with_text("Add World")
             .with_callback(Box::new(move || {
-                data.borrow_mut().queued_layout = Some(generate_view(data.clone(), num + 1))
+                {
+                    let mut m = model.borrow_mut();
+                    m.worlds.push(WorldModel { entities: vec![] });
+                }
+
+                data.borrow_mut().queued_layout = Some(generate_view(data.clone(), model.clone()));
             }))
             .build_boxed())
         .build()
