@@ -12,30 +12,40 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-extern crate phosphorus;
+#![feature(path_ext)]
+
 extern crate gfx;
 extern crate gfx_device_gl;
 extern crate gfx_window_glutin;
 extern crate glutin;
+extern crate phosphorus;
+extern crate rustc_serialize;
 
-use std::env;
 use std::cell::RefCell;
+use std::env;
+use std::fs::{File, PathExt};
+use std::io::{Read, Write};
+use std::path::{PathBuf};
 use std::rc::Rc;
 use gfx::traits::*;
 use phosphorus::Gui;
 use phosphorus::widget::{ButtonBuilder, Layout, LayoutBuilder, TextBuilder};
+use rustc_serialize::json;
 
 struct SharedData {
     canceled: bool,
     queued_layout: Option<Layout<gfx_device_gl::Resources>>
 }
 
+#[derive(RustcDecodable, RustcEncodable, Clone)]
 struct EntityEntry;
 
+#[derive(RustcDecodable, RustcEncodable, Clone)]
 struct WorldModel {
     entities: Vec<EntityEntry>
 }
 
+#[derive(RustcDecodable, RustcEncodable, Clone)]
 struct Model {
     worlds: Vec<WorldModel>
 }
@@ -52,16 +62,43 @@ fn main() {
         }
     };
 
+    // Get the actual path of the data file
+    let mut path = PathBuf::from(path);
+    path.push("editor.json");
+
+    let model = Rc::new(RefCell::new(if !path.exists() {
+        println!("Creating new editor.json...");
+        let model = Model { worlds: vec![] };
+
+        save_model(&path, &model);
+
+        model
+    } else {
+        println!("Loading in editor.json...");
+        let mut file = File::open(path.clone()).unwrap();
+        let mut file_data = String::new();
+        file.read_to_string(&mut file_data).unwrap();
+
+        json::decode::<Model>(&file_data).unwrap()
+    }));
+
     // Set up our Phosphorus UI
     let data = Rc::new(RefCell::new(SharedData { canceled: false, queued_layout: None }));
-    let layout = generate_view(data.clone(), Rc::new(RefCell::new(Model { worlds: vec![] })));
+    let layout = generate_view(path, data.clone(), model);
 
     data.borrow_mut().queued_layout = Some(layout);
 
     display_gui(data);
 }
 
-fn generate_view(data: Rc<RefCell<SharedData>>, model: Rc<RefCell<Model>>) -> Layout<gfx_device_gl::Resources> {
+fn save_model(proj_path: &PathBuf, model: &Model){
+    let mut file = File::create(proj_path).unwrap();
+    file.write_all(&json::encode(&model).unwrap().as_bytes()).unwrap();
+}
+
+fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<RefCell<Model>>) -> Layout<gfx_device_gl::Resources> {
+    save_model(&proj_path, &model.borrow());
+
     let mut builder = LayoutBuilder::<gfx_device_gl::Resources>::new()
         .with_background_color([21, 23, 24]);
 
@@ -83,6 +120,7 @@ fn generate_view(data: Rc<RefCell<SharedData>>, model: Rc<RefCell<Model>>) -> La
 
         let tmp_model = model.clone();
         let tmp_data = data.clone();
+        let tmp_path = proj_path.clone();
         builder = builder
             .with_widget(ButtonBuilder::new()
                 .with_text("Add Entity")
@@ -93,7 +131,7 @@ fn generate_view(data: Rc<RefCell<SharedData>>, model: Rc<RefCell<Model>>) -> La
                         w.entities.push(EntityEntry);
                     }
 
-                    tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_data.clone(), tmp_model.clone()));
+                    tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
                 }))
             .build_boxed());
         wnum += 1;
@@ -111,7 +149,7 @@ fn generate_view(data: Rc<RefCell<SharedData>>, model: Rc<RefCell<Model>>) -> La
                     m.worlds.push(WorldModel { entities: vec![] });
                 }
 
-                data.borrow_mut().queued_layout = Some(generate_view(data.clone(), model.clone()));
+                data.borrow_mut().queued_layout = Some(generate_view(proj_path.clone(), data.clone(), model.clone()));
             }))
             .build_boxed())
         .build()
