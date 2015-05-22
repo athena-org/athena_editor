@@ -18,12 +18,60 @@ extern crate gfx_device_gl;
 extern crate gfx_window_glutin;
 extern crate glutin;
 
+use std::env;
+use std::cell::RefCell;
+use std::rc::Rc;
 use gfx::traits::*;
-use phosphorus::widget::*;
+use phosphorus::Gui;
+use phosphorus::widget::{ButtonBuilder, Layout, LayoutBuilder, TextBuilder};
 
-//static HELLO_MARKUP: &'static str = include_str!("assets/hello-markup.jade");
+struct CancelationToken {
+    canceled: bool
+}
 
 fn main() {
+    // This is all a bunch of placeholder code that needs to be refactored into something coherent
+
+    // Get the target path to open the editor at
+    let path = match env::args().nth(1) {
+        Some(v) => v,
+        None => {
+            display_error("No path given!");
+            return;
+        }
+    };
+
+    // Set up our Phosphorus UI
+    let token = Rc::new(RefCell::new(CancelationToken { canceled: false }));
+    let layout = LayoutBuilder::<gfx_device_gl::Resources>::new()
+        .with_background_color([21, 23, 24])
+        .with_widget(TextBuilder::new()
+            .with_text(&format!("Opened: {}!", path))
+            .build_boxed())
+        .build();
+
+    display_gui(layout, token);
+}
+
+fn display_error(text: &str) {
+    let token = Rc::new(RefCell::new(CancelationToken { canceled: false }));
+    let token_clone = token.clone();
+    let layout = LayoutBuilder::<gfx_device_gl::Resources>::new()
+        .with_background_color([21, 23, 24])
+        .with_widget(TextBuilder::new()
+            .with_text(text)
+            .build_boxed())
+        .with_widget(ButtonBuilder::new()
+            .with_text("Ok")
+            .with_callback(Box::new(move || token_clone.borrow_mut().canceled = true))
+            .build_boxed())
+        .build();
+
+    display_gui(layout, token);
+}
+
+fn display_gui(layout: Layout<gfx_device_gl::Resources>, token: Rc<RefCell<CancelationToken>>)
+{
     // Set up our window
     let (mut stream, mut device, mut factory) = {
         let window = glutin::WindowBuilder::new()
@@ -34,17 +82,14 @@ fn main() {
         gfx_window_glutin::init(window)
     };
 
-    // Set up our Phosphorus UI
-    let root = phosphorus::widget::LayoutBuilder::new()
-        .with_background_color([21, 23, 24])
-        .with_widget(phosphorus::widget::TextBuilder::new()
-            .with_text("Hello World!")
-            .build_boxed())
-        .build();
-    let mut gui = phosphorus::Gui::new(&mut device, root, |d: &mut gfx_device_gl::Device| d.spawn_factory());
+    let mut gui = Gui::new(&mut device, layout, |d: &mut gfx_device_gl::Device| d.spawn_factory());
 
     // Run our actual UI loop
     'main: loop {
+        if token.borrow().canceled {
+            break 'main;
+        }
+
         // Quit when the window is closed
         for event in stream.out.window.poll_events() {
             match event {
