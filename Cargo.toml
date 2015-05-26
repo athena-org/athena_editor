@@ -5,20 +5,12 @@ authors = ["The Athena Developers"]
 license = "Apache-2.0"
 
 [dependencies]
-rustc-serialize = "*"
+glutin = "0.1.6"
+gfx = "0.5.2"
+gfx_device_gl = "0.3.1"
+gfx_window_glutin = "0.1.1"
+rustc-serialize = "0.3.14"
 
 [dependencies.phosphorus]
 git = "https://github.com/athena-org/phosphorus.git"
 branch = "develop"
-
-[dependencies.gfx]
-git = "https://github.com/gfx-rs/gfx-rs"
-
-[dependencies.gfx_device_gl]
-git = "https://github.com/gfx-rs/gfx_device_gl"
-
-[dependencies.gfx_window_glutin]
-git = "https://github.com/gfx-rs/gfx_window_glutin"
-
-[dependencies.glutin]
-git = "https://github.com/tomaka/glutin"
