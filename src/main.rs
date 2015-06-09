@@ -92,7 +92,10 @@ fn main() {
 }
 
 fn save_model(proj_path: &PathBuf, model: &Model){
-    let mut file = File::create(proj_path).unwrap();
+    let mut file = match File::create(proj_path) {
+        Ok(f) => f,
+        Err(e) => panic!(format!("Folder does not exist or is not accessable, error: {:?}", e))
+    };
     file.write_all(&json::encode(&model).unwrap().as_bytes()).unwrap();
 }
 
