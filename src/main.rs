@@ -40,16 +40,18 @@ struct SharedData {
 #[derive(RustcDecodable, RustcEncodable, Clone)]
 struct EntityEntry {
     x: f32,
-    y: f32
+    y: f32,
+    z: f32
 }
 
 #[derive(RustcDecodable, RustcEncodable, Clone)]
 struct WorldModel {
-    entities: Vec<EntityEntry>
+    entities: Vec<Rc<RefCell<EntityEntry>>>
 }
 
 #[derive(RustcDecodable, RustcEncodable, Clone)]
 struct Model {
+    current_entity: Option<Rc<RefCell<EntityEntry>>>,
     worlds: Vec<WorldModel>
 }
 
@@ -76,7 +78,7 @@ fn main() {
 
     let model = Rc::new(RefCell::new(if !editor_path.exists() {
         println!("Creating new editor.json...");
-        let model = Model { worlds: vec![] };
+        let model = Model { current_entity: None, worlds: vec![] };
 
         save_model(&editor_path, &model);
 
@@ -89,6 +91,7 @@ fn main() {
 
         json::decode::<Model>(&file_data).unwrap()
     }));
+    model.borrow_mut().current_entity = None;
 
     // Set up our Phosphorus UI
     let data = Rc::new(RefCell::new(SharedData { canceled: false, queued_layout: None }));
@@ -124,11 +127,25 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
 
         // Show all of our entities
         let mut ennum = 0;
-        for entity in &world.entities {
+        for rc_entity in &world.entities {
+            let entity = rc_entity.borrow_mut();
+            let tmp_rc_entity = rc_entity.clone();
+            let tmp_model = model.clone();
+            let tmp_data = data.clone();
+            let tmp_path = proj_path.clone();
+
             builder = builder
                 .with_widget(ButtonBuilder::new()
-                    .with_text(&format!("Entity #{} - {{x: {}, y: {}}}", ennum, entity.x, entity.y))
-                    .with_size([160, 20])
+                    .with_text(&format!("Entity #{} - {{x: {}, y: {}, z: {}}}", ennum, entity.x, entity.y, entity.z))
+                    .with_size([180, 20])
+                    .with_callback(Box::new(move || {
+                        {
+                            let mut m = tmp_model.borrow_mut();
+                            m.current_entity = Some(tmp_rc_entity.clone());
+                        }
+
+                        tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
+                    }))
                     .build_boxed());
             ennum += 1;
         }
@@ -144,12 +161,13 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
                     {
                         let mut m = tmp_model.borrow_mut();
                         let w = m.worlds.get_mut(wnum).unwrap();
-                        w.entities.push(EntityEntry { x: 0.0, y: 0.0 });
+                        w.entities.push(Rc::new(RefCell::new(EntityEntry { x: 0.0, y: 0.0, z: 0.0 })));
                     }
 
                     tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
                 }))
-            .build_boxed());
+                .build_boxed()
+            );
         wnum += 1;
 
         // Placeholder text as padding
@@ -157,20 +175,79 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
     }
 
     // Show an add world button
+    let tmp_model = model.clone();
+    let tmp_data = data.clone();
+    let tmp_path = proj_path.clone();
     builder = builder
         .with_widget(ButtonBuilder::new()
             .with_text("Add World")
             .with_callback(Box::new(move || {
                 {
-                    let mut m = model.borrow_mut();
+                    let mut m = tmp_model.borrow_mut();
                     m.worlds.push(WorldModel { entities: vec![] });
                 }
 
-                data.borrow_mut().queued_layout = Some(generate_view(proj_path.clone(), data.clone(), model.clone()));
+                tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
             }))
             .build_boxed());
 
+    // Show an editor for the currently selected entity
+    builder = builder
+        .with_widget(TextBuilder::new().build_boxed())
+        .with_widget(TextBuilder::new()
+            .with_text("=== Edit Entity ===")
+            .build_boxed()
+        );
+
+    {
+        let m = model.borrow_mut();
+        if let &Some(ref rc_entity) = &m.current_entity {
+            let entity = rc_entity.borrow();
+
+            builder = builder
+                .with_widget(TextBuilder::new()
+                    .with_text(&format!("X: {} Y: {} Z: {}", entity.x, entity.y, entity.z))
+                    .build_boxed()
+                );
+
+            // Show buttons for changing position
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "X + 1", Box::new(|e| e.x += 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "X - 1", Box::new(|e| e.x -= 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "Y + 1", Box::new(|e| e.y += 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "Y - 1", Box::new(|e| e.y -= 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "Z + 1", Box::new(|e| e.z += 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "Z - 1", Box::new(|e| e.z -= 1.0));
+        }
+    }
+
     builder.build()
+}
+
+fn show_adder_button(
+    mut builder: LayoutBuilder<gfx_device_gl::Resources>,
+    path: &PathBuf, data: &Rc<RefCell<SharedData>>, model: &Rc<RefCell<Model>>, rc_entity: &Rc<RefCell<EntityEntry>>,
+    text: &'static str, adder: Box<Fn(&mut EntityEntry)>)
+ -> LayoutBuilder<gfx_device_gl::Resources>
+{
+    let tmp_model = model.clone();
+    let tmp_data = data.clone();
+    let tmp_path = path.clone();
+    let tmp_entity = rc_entity.clone();
+    builder = builder
+        .with_widget(ButtonBuilder::new()
+            .with_text(text)
+            .with_callback(Box::new(move || {
+                {
+                    let mut entity = tmp_entity.borrow_mut();
+                    adder(&mut entity);
+                }
+
+                tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
+            }))
+            .build_boxed()
+        );
+
+    builder
 }
 
 fn display_error(text: &str) {
@@ -199,7 +276,7 @@ fn display_gui(data: Rc<RefCell<SharedData>>)
         let window = glutin::WindowBuilder::new()
             .with_vsync()
             .with_dimensions(600, 500)
-            .with_title(String::from("Phosphorus Widgets"))
+            .with_title(String::from("Athena Editor"))
             .build_strict().unwrap();
         gfx_window_glutin::init(window)
     };
