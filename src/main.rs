@@ -38,7 +38,10 @@ struct SharedData {
 }
 
 #[derive(RustcDecodable, RustcEncodable, Clone)]
-struct EntityEntry;
+struct EntityEntry {
+    x: f32,
+    y: f32
+}
 
 #[derive(RustcDecodable, RustcEncodable, Clone)]
 struct WorldModel {
@@ -62,20 +65,25 @@ fn main() {
         }
     };
 
-    // Get the actual path of the data file
-    let mut path = PathBuf::from(path);
-    path.push("editor.json");
+    // Make sure it's a zeus project
+    let mut toml_path = PathBuf::from(path.clone());
+    toml_path.push("Zeus.toml");
+    if !toml_path.exists() { display_error("Not a zeus project!"); return; }
 
-    let model = Rc::new(RefCell::new(if !path.exists() {
+    // Get the actual path of the data file
+    let mut editor_path = PathBuf::from(path);
+    editor_path.push("editor.json");
+
+    let model = Rc::new(RefCell::new(if !editor_path.exists() {
         println!("Creating new editor.json...");
         let model = Model { worlds: vec![] };
 
-        save_model(&path, &model);
+        save_model(&editor_path, &model);
 
         model
     } else {
         println!("Loading in editor.json...");
-        let mut file = File::open(path.clone()).unwrap();
+        let mut file = File::open(editor_path.clone()).unwrap();
         let mut file_data = String::new();
         file.read_to_string(&mut file_data).unwrap();
 
@@ -84,7 +92,7 @@ fn main() {
 
     // Set up our Phosphorus UI
     let data = Rc::new(RefCell::new(SharedData { canceled: false, queued_layout: None }));
-    let layout = generate_view(path, data.clone(), model);
+    let layout = generate_view(editor_path, data.clone(), model);
 
     data.borrow_mut().queued_layout = Some(layout);
 
@@ -100,11 +108,13 @@ fn save_model(proj_path: &PathBuf, model: &Model){
 }
 
 fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<RefCell<Model>>) -> Layout<gfx_device_gl::Resources> {
+    // Save our model before generating so the file's always up-to-date with what's visible
     save_model(&proj_path, &model.borrow());
 
     let mut builder = LayoutBuilder::<gfx_device_gl::Resources>::new()
         .with_background_color([21, 23, 24]);
 
+    // Show all of our worlds
     let mut wnum = 0;
     for world in &model.borrow_mut().worlds {
         builder = builder
@@ -112,15 +122,18 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
                 .with_text(&format!("== World #{} ==", wnum))
                 .build_boxed());
 
+        // Show all of our entities
         let mut ennum = 0;
         for entity in &world.entities {
             builder = builder
-                .with_widget(TextBuilder::new()
-                    .with_text(&format!("Entity #{}", ennum))
+                .with_widget(ButtonBuilder::new()
+                    .with_text(&format!("Entity #{} - {{x: {}, y: {}}}", ennum, entity.x, entity.y))
+                    .with_size([160, 20])
                     .build_boxed());
             ennum += 1;
         }
 
+        // Show a button to create a new entity
         let tmp_model = model.clone();
         let tmp_data = data.clone();
         let tmp_path = proj_path.clone();
@@ -131,7 +144,7 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
                     {
                         let mut m = tmp_model.borrow_mut();
                         let w = m.worlds.get_mut(wnum).unwrap();
-                        w.entities.push(EntityEntry);
+                        w.entities.push(EntityEntry { x: 0.0, y: 0.0 });
                     }
 
                     tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
@@ -143,7 +156,8 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
         builder = builder.with_widget(TextBuilder::new().build_boxed());
     }
 
-    builder
+    // Show an add world button
+    builder = builder
         .with_widget(ButtonBuilder::new()
             .with_text("Add World")
             .with_callback(Box::new(move || {
@@ -154,8 +168,9 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
 
                 data.borrow_mut().queued_layout = Some(generate_view(proj_path.clone(), data.clone(), model.clone()));
             }))
-            .build_boxed())
-        .build()
+            .build_boxed());
+
+    builder.build()
 }
 
 fn display_error(text: &str) {
@@ -189,10 +204,7 @@ fn display_gui(data: Rc<RefCell<SharedData>>)
         gfx_window_glutin::init(window)
     };
 
-    let mut gui = Gui::new(
-        &mut device,
-        data.borrow_mut().queued_layout.take().unwrap(),
-        |d: &mut gfx_device_gl::Device| d.spawn_factory());
+    let mut gui = Gui::new(&mut device, &mut factory, data.borrow_mut().queued_layout.take().unwrap());
 
     // Run our actual UI loop
     'main: loop {
