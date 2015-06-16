@@ -38,15 +38,20 @@ struct SharedData {
 }
 
 #[derive(RustcDecodable, RustcEncodable, Clone)]
-struct EntityEntry;
+struct EntityEntry {
+    x: f32,
+    y: f32,
+    z: f32
+}
 
 #[derive(RustcDecodable, RustcEncodable, Clone)]
 struct WorldModel {
-    entities: Vec<EntityEntry>
+    entities: Vec<Rc<RefCell<EntityEntry>>>
 }
 
 #[derive(RustcDecodable, RustcEncodable, Clone)]
 struct Model {
+    current_entity: Option<Rc<RefCell<EntityEntry>>>,
     worlds: Vec<WorldModel>
 }
 
@@ -62,29 +67,35 @@ fn main() {
         }
     };
 
+    // Make sure it's a zeus project
+    let mut toml_path = PathBuf::from(path.clone());
+    toml_path.push("Zeus.toml");
+    if !toml_path.exists() { display_error("Not a zeus project!"); return; }
+
     // Get the actual path of the data file
-    let mut path = PathBuf::from(path);
-    path.push("editor.json");
+    let mut editor_path = PathBuf::from(path);
+    editor_path.push("editor.json");
 
-    let model = Rc::new(RefCell::new(if !path.exists() {
+    let model = Rc::new(RefCell::new(if !editor_path.exists() {
         println!("Creating new editor.json...");
-        let model = Model { worlds: vec![] };
+        let model = Model { current_entity: None, worlds: vec![] };
 
-        save_model(&path, &model);
+        save_model(&editor_path, &model);
 
         model
     } else {
         println!("Loading in editor.json...");
-        let mut file = File::open(path.clone()).unwrap();
+        let mut file = File::open(editor_path.clone()).unwrap();
         let mut file_data = String::new();
         file.read_to_string(&mut file_data).unwrap();
 
         json::decode::<Model>(&file_data).unwrap()
     }));
+    model.borrow_mut().current_entity = None;
 
     // Set up our Phosphorus UI
     let data = Rc::new(RefCell::new(SharedData { canceled: false, queued_layout: None }));
-    let layout = generate_view(path, data.clone(), model);
+    let layout = generate_view(editor_path, data.clone(), model);
 
     data.borrow_mut().queued_layout = Some(layout);
 
@@ -92,16 +103,21 @@ fn main() {
 }
 
 fn save_model(proj_path: &PathBuf, model: &Model){
-    let mut file = File::create(proj_path).unwrap();
+    let mut file = match File::create(proj_path) {
+        Ok(f) => f,
+        Err(e) => panic!(format!("Folder does not exist or is not accessable, error: {:?}", e))
+    };
     file.write_all(&json::encode(&model).unwrap().as_bytes()).unwrap();
 }
 
 fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<RefCell<Model>>) -> Layout<gfx_device_gl::Resources> {
+    // Save our model before generating so the file's always up-to-date with what's visible
     save_model(&proj_path, &model.borrow());
 
     let mut builder = LayoutBuilder::<gfx_device_gl::Resources>::new()
         .with_background_color([21, 23, 24]);
 
+    // Show all of our worlds
     let mut wnum = 0;
     for world in &model.borrow_mut().worlds {
         builder = builder
@@ -109,15 +125,32 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
                 .with_text(&format!("== World #{} ==", wnum))
                 .build_boxed());
 
+        // Show all of our entities
         let mut ennum = 0;
-        for entity in &world.entities {
+        for rc_entity in &world.entities {
+            let entity = rc_entity.borrow_mut();
+            let tmp_rc_entity = rc_entity.clone();
+            let tmp_model = model.clone();
+            let tmp_data = data.clone();
+            let tmp_path = proj_path.clone();
+
             builder = builder
-                .with_widget(TextBuilder::new()
-                    .with_text(&format!("Entity #{}", ennum))
+                .with_widget(ButtonBuilder::new()
+                    .with_text(&format!("Entity #{} - {{x: {}, y: {}, z: {}}}", ennum, entity.x, entity.y, entity.z))
+                    .with_size([180, 20])
+                    .with_callback(Box::new(move || {
+                        {
+                            let mut m = tmp_model.borrow_mut();
+                            m.current_entity = Some(tmp_rc_entity.clone());
+                        }
+
+                        tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
+                    }))
                     .build_boxed());
             ennum += 1;
         }
 
+        // Show a button to create a new entity
         let tmp_model = model.clone();
         let tmp_data = data.clone();
         let tmp_path = proj_path.clone();
@@ -128,31 +161,93 @@ fn generate_view(proj_path: PathBuf, data: Rc<RefCell<SharedData>>, model: Rc<Re
                     {
                         let mut m = tmp_model.borrow_mut();
                         let w = m.worlds.get_mut(wnum).unwrap();
-                        w.entities.push(EntityEntry);
+                        w.entities.push(Rc::new(RefCell::new(EntityEntry { x: 0.0, y: 0.0, z: 0.0 })));
                     }
 
                     tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
                 }))
-            .build_boxed());
+                .build_boxed()
+            );
         wnum += 1;
 
         // Placeholder text as padding
         builder = builder.with_widget(TextBuilder::new().build_boxed());
     }
 
-    builder
+    // Show an add world button
+    let tmp_model = model.clone();
+    let tmp_data = data.clone();
+    let tmp_path = proj_path.clone();
+    builder = builder
         .with_widget(ButtonBuilder::new()
             .with_text("Add World")
             .with_callback(Box::new(move || {
                 {
-                    let mut m = model.borrow_mut();
+                    let mut m = tmp_model.borrow_mut();
                     m.worlds.push(WorldModel { entities: vec![] });
                 }
 
-                data.borrow_mut().queued_layout = Some(generate_view(proj_path.clone(), data.clone(), model.clone()));
+                tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
             }))
-            .build_boxed())
-        .build()
+            .build_boxed());
+
+    // Show an editor for the currently selected entity
+    builder = builder
+        .with_widget(TextBuilder::new().build_boxed())
+        .with_widget(TextBuilder::new()
+            .with_text("=== Edit Entity ===")
+            .build_boxed()
+        );
+
+    {
+        let m = model.borrow_mut();
+        if let &Some(ref rc_entity) = &m.current_entity {
+            let entity = rc_entity.borrow();
+
+            builder = builder
+                .with_widget(TextBuilder::new()
+                    .with_text(&format!("X: {} Y: {} Z: {}", entity.x, entity.y, entity.z))
+                    .build_boxed()
+                );
+
+            // Show buttons for changing position
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "X + 1", Box::new(|e| e.x += 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "X - 1", Box::new(|e| e.x -= 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "Y + 1", Box::new(|e| e.y += 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "Y - 1", Box::new(|e| e.y -= 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "Z + 1", Box::new(|e| e.z += 1.0));
+            builder = show_adder_button(builder, &proj_path, &data, &model, rc_entity, "Z - 1", Box::new(|e| e.z -= 1.0));
+        }
+    }
+
+    builder.build()
+}
+
+fn show_adder_button(
+    mut builder: LayoutBuilder<gfx_device_gl::Resources>,
+    path: &PathBuf, data: &Rc<RefCell<SharedData>>, model: &Rc<RefCell<Model>>, rc_entity: &Rc<RefCell<EntityEntry>>,
+    text: &'static str, adder: Box<Fn(&mut EntityEntry)>)
+ -> LayoutBuilder<gfx_device_gl::Resources>
+{
+    let tmp_model = model.clone();
+    let tmp_data = data.clone();
+    let tmp_path = path.clone();
+    let tmp_entity = rc_entity.clone();
+    builder = builder
+        .with_widget(ButtonBuilder::new()
+            .with_text(text)
+            .with_callback(Box::new(move || {
+                {
+                    let mut entity = tmp_entity.borrow_mut();
+                    adder(&mut entity);
+                }
+
+                tmp_data.borrow_mut().queued_layout = Some(generate_view(tmp_path.clone(), tmp_data.clone(), tmp_model.clone()));
+            }))
+            .build_boxed()
+        );
+
+    builder
 }
 
 fn display_error(text: &str) {
@@ -181,15 +276,12 @@ fn display_gui(data: Rc<RefCell<SharedData>>)
         let window = glutin::WindowBuilder::new()
             .with_vsync()
             .with_dimensions(600, 500)
-            .with_title(String::from("Phosphorus Widgets"))
+            .with_title(String::from("Athena Editor"))
             .build_strict().unwrap();
         gfx_window_glutin::init(window)
     };
 
-    let mut gui = Gui::new(
-        &mut device,
-        data.borrow_mut().queued_layout.take().unwrap(),
-        |d: &mut gfx_device_gl::Device| d.spawn_factory());
+    let mut gui = Gui::new(&mut device, &mut factory, data.borrow_mut().queued_layout.take().unwrap());
 
     // Run our actual UI loop
     'main: loop {
